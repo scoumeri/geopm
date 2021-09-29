@@ -46,4 +46,5 @@ EXTRA_DIST += integration/experiment/monitor/gen_plot_achieved_power.py \
               integration/experiment/monitor/run_monitor_nekbone.py \
               integration/experiment/monitor/run_monitor_pennant.py \
               integration/experiment/monitor/run_monitor_qe.py \
+	      integration/experiment/monitor/run_monitor_parres_dgemm.py \
               # end
