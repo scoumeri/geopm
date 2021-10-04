@@ -1,0 +1,16 @@
+diff --git a/Cxx11/nstream-cublas.cu b/Cxx11/nstream-cublas.cu
+index ffd8fa0b..7e792057 100644
+--- a/Cxx11/nstream-cublas.cu
++++ b/Cxx11/nstream-cublas.cu
+@@ -63,9 +63,11 @@
+ 
+ #include "prk_util.h"
+ #include "prk_cuda.h"
++#include "prk_mpi.h"
+ 
+ int main(int argc, char * argv[])
+ {
++  prk::MPI::state mpi(argc,argv);
+   std::cout << "Parallel Research Kernels version " << PRKVERSION << std::endl;
+   std::cout << "C++11/CUBLAS STREAM triad: A = B + scalar * C" << std::endl;
+ 
