@@ -58,18 +58,18 @@ def setup_run_args(parser):
     parser.add_argument('--parres-cores-per-node', dest='parres_cores_per_node',
                         action='store', type=int,
                         help='Number of physical cores to reserve for the app. ' +
-                             'If not defined, highest 4 will be reserved.')
+                             'If not defined, app-type will determine setting.')
     parser.add_argument('--parres-gpus-per-node', dest='parres_gpus_per_node',
                         action='store', type=int,
                         help='Number of physical gpus to reserve for the app. ' +
-                             'If not defined, highest number of gpus.')
+                             'If not defined, app-type will determine setting.')
     parser.add_argument('--parres-cores-per-rank', dest='parres_cores_per_rank',
                         action='store', type=int, default=1,
                         help='Number of physical cores to use per rank for OMP parallelism.' +
                              'Default is 1.')
-    parser.add_argument('--single-cpu', dest='single_cpu',
-                        action='store_const', const=True, default=False,
-                        help='Use single CPU version of binary')
+#    parser.add_argument('--single-cpu', dest='single_cpu',
+#                        action='store_const', const=True, default=False,
+#                        help='Use single CPU version of binary')
     parser.add_argument('--use-mpi-pin-default-list', dest='mpi_pin_default',
                         action='store_const', const=True, default=False,
                         help='export I_MPI_PIN_PROCESSOR_LIST with default list, must run with arg geopm-affinity-disable')
@@ -79,12 +79,12 @@ def setup_run_args(parser):
 
     
     
-def create_appconf(mach, args):
+def create_dgemm_appconf(mach, args):
     ''' Create a ParresAppConfig object from an ArgParse and experiment.machine object.                                                                                                                                                                                                                                                                         
     '''
     return ParresDgemmAppConf(mach, args.node_count, args.parres_cores_per_node,
-                         args.parres_gpus_per_node, args.parres_cores_per_rank, args.single_cpu, args.parres_init_setup, args.parres_exp_setup, args.parres_teardown,
-                         args.mpi_pin_default, args.mpi_pin_list)
+                              args.parres_gpus_per_node, args.parres_cores_per_rank, args.parres_init_setup, args.parres_exp_setup, args.parres_teardown,
+                              args.mpi_pin_default, args.mpi_pin_list)
 
     
 class ParresDgemmAppConf(apps.AppConf):
@@ -92,12 +92,12 @@ class ParresDgemmAppConf(apps.AppConf):
     def name():
         return 'parres_dgemm'
 
-    def __init__(self, mach, num_nodes, cores_per_node, gpus_per_node, cores_per_rank, single_cpu, parres_init_setup, parres_exp_setup, parres_teardown, mpi_pin_default, mpi_pin_list):
+    def __init__(self, mach, num_nodes, cores_per_node, gpus_per_node, cores_per_rank, parres_init_setup, parres_exp_setup, parres_teardown, mpi_pin_default, mpi_pin_list):
         if cores_per_node is None:
-            if single_cpu:
-                self._cores_per_node = 1
-            else:
-                self._cores_per_node = 4
+            #if single_cpu:
+            #    self._cores_per_node = 1
+            #else:
+            self._cores_per_node = 4
         else:
             if cores_per_node > mach.num_core():
                 raise RuntimeError('Number of requested cores is more than the number ' +
@@ -111,12 +111,11 @@ class ParresDgemmAppConf(apps.AppConf):
         if gpus_per_node is None:
             gpus_per_node = mach.num_board_accelerator()
         else:
-            if (gpus_per_node > mach.num_board_accelerator()):
-                raise RuntimeError('Number of requested gpus is more than the number ' +
-                                   'of available gpus: {}'.format(gpus_per_node))
+            if (gpus_per_node != mach.num_board_accelerator()):
+                raise RuntimeError('Number of requested gpus must be the same as the available # of gpus')
 
-        if not ( ( self._cores_per_node // self.get_cpu_per_rank() == 4 or self._cores_per_node // self.get_cpu_per_rank() == 1 ) and gpus_per_node == 4):           
-            raise RunTimeError('Can currently only handle 4 or 1 ranks per node and 4 gpus per node')
+        if not ( self._cores_per_node // self.get_cpu_per_rank() == gpus_per_node):           
+            raise RunTimeError('Can currently only handle the same # of ranks and gpus per node')
                 
         benchmark_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -158,12 +157,129 @@ class ParresDgemmAppConf(apps.AppConf):
         self._parres_exp_setup = parres_exp_setup
         self._parres_teardown = parres_teardown
 
-        if single_cpu:
-            binary_name = 'Kernels/Cxx11/dgemm-multigpu-cublas'
-            params = ["10","16000","0","4"]
+        #if single_cpu: #taking out of code as non-mpi version does not work well with geopmlauncher
+        #    binary_name = 'Kernels/Cxx11/dgemm-multigpu-cublas'
+        #    params = ["10","16000","0","4"]
+        #else:
+        binary_name = 'Kernels/Cxx11/dgemm-mpi-cublas'
+        params = ["10","16000"]
+
+        self.app_params = " ".join(params)
+
+        self.exe_path = os.path.join(benchmark_dir, binary_name)
+
+
+    def get_rank_per_node(self):
+        return self._cores_per_node // self.get_cpu_per_rank()
+
+    def get_cpu_per_rank(self):
+        return self._cores_per_rank
+
+    def get_bash_exec_path(self):
+        return self.exe_path
+
+    def get_bash_exec_args(self):
+        return self.app_params
+
+    def get_bash_setup_commands(self):
+        setup_commands = textwrap.dedent('''
+        ulimit -s unlimited
+        export I_MPI_FABRICS=shm
+        ''')
+
+        return setup_commands
+
+    def trial_setup(self, run_id, output_dir):
+        if not self._parres_exp_setup is None:
+            os.chmod(self._parres_exp_setup, 0o755)
+            subprocess.call(self._parres_exp_setup, shell=True)
+
+        
+    
+    def experiment_teardown(self, output_dir):
+        if not self._parres_teardown is None:
+            os.chmod(self._parres_teardown, 0o755)
+            subprocess.call(self._parres_teardown, shell=True)
+
+
+
+def create_nstream_appconf(mach, args):
+    ''' Create a ParresAppConfig object from an ArgParse and experiment.machine object.                                                                                                                                                                                                                                                                         
+    '''
+    return ParresNstreamAppConf(mach, args.node_count, args.parres_cores_per_node,
+                                args.parres_gpus_per_node, args.parres_cores_per_rank, args.parres_init_setup, args.parres_exp_setup, args.parres_teardown,
+                                args.mpi_pin_default, args.mpi_pin_list)
+
+    
+class ParresNstreamAppConf(apps.AppConf):
+    @staticmethod
+    def name():
+        return 'parres_nstream'
+
+    def __init__(self, mach, num_nodes, cores_per_node, gpus_per_node, cores_per_rank, parres_init_setup, parres_exp_setup, parres_teardown, mpi_pin_default, mpi_pin_list):
+        if cores_per_node is None:
+            self._cores_per_node = 1
         else:
-            binary_name = 'Kernels/Cxx11/dgemm-mpi-cublas'
-            params = ["10","16000"]
+            if cores_per_node != 1:
+                raise RuntimeError('Currently Nstream can only handle 1 core per Node')
+            self._cores_per_node = cores_per_node
+        if self._cores_per_node % cores_per_rank != 0:
+            raise RuntimeError('Number of requested cores is not divisible by OMP threads '
+                               'per rank: {} % {}'.format(self._cores_per_node, cores_per_rank))
+        self._cores_per_rank = cores_per_rank
+
+        if gpus_per_node is None:
+            gpus_per_node = 1
+        else:
+            if (gpus_per_node > mach.num_board_accelerator()):
+                raise RuntimeError('Number of requested gpus is more than the number ' +
+                                   'of available gpus: {}'.format(gpus_per_node))
+
+        if not ( ( self._cores_per_node // self.get_cpu_per_rank() == 1 ) and gpus_per_node == 1):           
+            raise RunTimeError('Can currently only handle 1 ranks per node and 1 gpus per node')
+                
+        benchmark_dir = os.path.dirname(os.path.abspath(__file__))
+
+        affinity_disable = False
+        if mpi_pin_list is not None:
+            affinity_disable = True
+
+        elif mpi_pin_default:
+            affinity_disable = True
+            mpi_pin_list = "1,21"
+
+        if affinity_disable:
+            os.environ["I_MPI_PIN_PROCESSOR_LIST"] = mpi_pin_list
+            
+            
+        if not parres_init_setup is None:
+            if not os.path.isfile(parres_init_setup):
+                if (os.path.isfile(os.path.join(benchmark_dir, parres_init_setup))):
+                    parres_init_setup = os.path.join(benchmark_dir, parres_init_setup)
+                else:
+                    raise runtimeError("Parres-init-setup file not found:" + parres_init_setup)
+            os.chmod(parres_init_setup, 0o755)
+            subprocess.call(parres_init_setup, shell=True)
+
+        if not parres_exp_setup is None:
+            if not os.path.isfile(parres_exp_setup):
+                if (os.path.isfile(os.path.join(benchmark_dir, parres_exp_setup))):
+                    parres_exp_setup = os.path.join(benchmark_dir, parres_exp_setup)
+                else:
+                    raise runtimeError("Parres-exp-setup file not found:" + parres_exp_setup)
+            
+        if not parres_teardown is None:
+            if not os.path.isfile(parres_teardown):
+                if (os.path.isfile(os.path.join(benchmark_dir, parres_teardown))):
+                    parres_teardown = os.path.join(benchmark_dir, parres_teardown)
+                else:
+                    raise runtimeError("Parres-teardown file not found:" + parres_teardown)
+                
+        self._parres_exp_setup = parres_exp_setup
+        self._parres_teardown = parres_teardown
+
+        binary_name = 'Kernels/Cxx11/nstream-mpi-cublas'
+        params = ["10"," 2000000"]
 
         self.app_params = " ".join(params)
 
